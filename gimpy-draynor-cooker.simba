@@ -56,6 +56,7 @@ begin
   Self.Skills := [ERSSkill.COOKING, ERSSkill.TOTAL];
   Self.MinZoom := 0;
   Self.MaxZoom := 1;
+
   inherited;
 end;
 
@@ -134,7 +135,6 @@ begin
       WaitUntil(not Make.IsOpen(), 100, 4000);
 
     // wait until there arent anymore raw items in inventory or if we leveled up
-    //WaitUntil(Inventory.CountItem(Self.SelectedRawItem) = 0 or Chat.LeveledUp, 300, 70000);
     WaitUntil((not Inventory.ContainsItem(Self.SelectedRawItem)) or Chat.LeveledUp, 300, 70000);
 
     // if our inventory still contains raw items
@@ -145,7 +145,6 @@ begin
       Self.State := EState.START_BANKING;
 
     Wait(400,6000);
-
     Result := True;
   except
     Self.ExceptionCatch('TDraynorCooker.StartCooking',GetExceptionMessage);
@@ -189,9 +188,7 @@ begin
     Wait(400,1100);
 
     Self.State := EState.START_COOKING;
-
     Self.DoAntiban;
-
     Result := True;
   except
     Self.ExceptionCatch('TDraynorCooker.HandleBanking',GetExceptionMessage);
@@ -292,7 +289,9 @@ procedure TDraynorCooker.Init(maxActions: UInt32; maxTime: UInt64); override;
 begin
   ClearDebug();
   Self.Name := 'Gimpy666''s Draynor Cooker';
+
   inherited;
+
   Self.Console('Init()');
 
   // set the items we want to cook using what we provided in the script gui
@@ -388,10 +387,8 @@ var
 begin
   Self.Setup('Gimpy666s Draynor Cooker');
   Self.Start.setOnClick(@Self.StartScript);
-
   Self.AddTab('Script Settings');
   tab := Self.Tabs[High(Self.Tabs)];
-
   Self.CreateAccountManager(tab);
 
   with Self.Info do
