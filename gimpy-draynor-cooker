@@ -1,0 +1,462 @@
+{$DEFINE SCRIPT_ID := ''}
+{$DEFINE SCRIPT_REVISION := '1'}
+{$IFNDEF SCRIPT_CHAIN}
+  {$DEFINE SCRIPT_GUI}
+  {$I SRL-T/osr.simba}
+  {$I WaspLib/osr.simba}
+{$ENDIF}
+
+{------------------------------------------------------------------------
+Gimpy666's Draynor Cooker Revision 1
+23-Jul-2025
+
+This script will cook raw food in Draynor Village by withdrawing raw food
+from the Draynor Village bank and cook them on the Forester's fire south
+of the bank.
+
+Tested with:
+o RuneLite x64
+o Simba r1400 x64
+o SRL-T 7.20.11
+o WaspLib 20.3.6
+
+Instructions:
+o Start the script in the bank in Draynor Village
+o Have your raw food item located at the top of your bank
+------------------------------------------------------------------------}
+
+type
+  EState = (
+    START_BANKING,
+    START_COOKING,
+    UNKNOWN,
+    TERMINATE_SCRIPT);
+
+  TDraynorCooker = record (TBaseBankScript)
+    State: EState;
+    SelectedRawItem: TRSItem;
+    CookingXP: Integer;
+    RawItems: TRSItemArray;
+    CookedItems: TRSItemArray;
+    RawItemToWithdraw: TRSBankItem;
+    Fire: TRSObjectV2;
+    DebuggingEnabled: Boolean;
+  end;
+
+const
+  // initialize constants
+  DRAYNOR_VILLAGE: TRSMapChunk := [[47,51,49,49],[0]];
+  FIRE_COORD: TPoint := [8288,37482];
+var
+  // initialize records
+  TScript: TDraynorCooker;
+
+procedure TAntiban.Setup(); override;
+begin
+  Self.Skills := [ERSSkill.COOKING, ERSSkill.TOTAL];
+  Self.MinZoom := 0;
+  Self.MaxZoom := 1;
+  inherited;
+end;
+
+function TDraynorCooker.StartCooking: Boolean;
+var
+  fireTP: TPoint;
+  fireTB: TBox;
+  fireTR: TRectangle;
+  attempts: Integer := 0;
+begin
+  try
+    Self.Console('StartCooking()');
+
+    // close open interfaces
+    InterfaceArea.Close(True);
+    Wait(1000,1200);
+
+    // get the mainscreen trectangle for the fire coordinate
+    fireTR := Map.GetTileMS(FIRE_COORD);
+
+    // convert the trectangle to tbox
+    fireTB := fireTR.Bounds;
+    fireTB := fireTB.Expand(5);
+
+    // find a random tpoint of the fire within the mainscreen coordinate tbox
+    repeat
+      attempts += 1;
+      fireTP := MainScreen.FindObject(Self.Fire.Finder,fireTB).Merge.Mean.Offset(Random(-2,2),Random(-2,2)); //.RandomValue.RandomValue;
+      Wait(200);
+    until
+      (fireTP <> [0,0]) or (attempts = 20);
+
+    // ensure we can see the fire
+    if fireTP = [0,0] then
+    begin
+      Self.Console('Fire is not visible on mainscreen');
+      Antiban.RandomRotate;
+      RSMouseZoom.SetZoomLevel(Random(10, 15));
+      Exit;
+    end;
+
+    // move mouse over the fire
+    Mouse.Move(fireTP);
+
+    // if the uptext is fire and randomness, click it
+    if MainScreen.IsUpText('Fire',500) and Antiban.BioDice then
+      Mouse.Click(fireTP.X,fireTP.Y,MOUSE_LEFT)
+    else
+    // if the uptext isnt the fire, right click it and select cook
+    begin
+      Mouse.Click(fireTP.X,fireTP.Y,MOUSE_RIGHT);
+      if ChooseOption.HasOption('Cook') then
+        ChooseOption.Select('Cook')
+      // if the cook option isnt there, exit
+      else
+        Exit;
+    end;
+
+    // wait until there's a red click
+    WaitUntil(MainScreen.DidRedClick(500),10,500);
+
+    // wait until player is done moving
+    Wait(1000,1500);
+    Minimap.WaitPlayerMoving;
+    Wait(500,1000);
+
+    // if the cooking make prompt isnt open, exit
+    if not Make.IsOpen then
+      Exit;
+
+    // click the cook all option
+    Result := Make.Select(0, Make.QUANTITY_ALL, Antiban.BioDice)
+
+    // if we were able to click the make button, wait until it is not open anymore
+    if Result then
+      WaitUntil(not Make.IsOpen(), 100, 4000);
+
+    // wait until there arent anymore raw items in inventory or if we leveled up
+    //WaitUntil(Inventory.CountItem(Self.SelectedRawItem) = 0 or Chat.LeveledUp, 300, 70000);
+    WaitUntil((not Inventory.ContainsItem(Self.SelectedRawItem)) or Chat.LeveledUp, 300, 70000);
+
+    // if our inventory still contains raw items
+    if Inventory.Items.Contains(Self.SelectedRawItem) then
+      Self.State := EState.START_COOKING
+    // if our inventory doesnt contains raw items
+    else
+      Self.State := EState.START_BANKING;
+
+    Wait(400,6000);
+
+    Result := True;
+  except
+    Self.ExceptionCatch('TDraynorCooker.StartCooking',GetExceptionMessage);
+    Result := False;
+  end;
+end;
+
+function TDraynorCooker.HandleBanking: Boolean;
+var
+  itemToWithdraw: TRSBankItem;
+begin
+  try
+    Self.Console('HandleBanking()');
+
+    // if the bank interface isnt open, walk to the nearest bank and open it
+    if not Bank.IsOpen then
+      Banks.WalkOpen;
+
+    // if we failed to open the bank, exit
+    if not Bank.IsOpen then
+      Exit;
+
+    // deposit all items in inventory
+    Bank.DepositAll;
+    Wait(500,1500);
+
+    // if we dont have any raw items left
+    if Bank.CountItem(Self.SelectedRawItem) = 0 then
+    begin
+      Self.Console('Could not find '+Self.SelectedRawItem+' in the bank');
+      Self.State := EState.TERMINATE_SCRIPT;
+      Exit;
+    end;
+
+    // setup the TRSBankItem
+    itemToWithdraw := itemToWithdraw.Setup(Self.SelectedRawItem,28,False);
+
+    // withdraw the item
+    Bank.WithdrawItem(itemToWithdraw,True);
+    WaitUntil(Inventory.ContainsItem(Self.SelectedRawItem),100,2000);
+    Wait(400,1100);
+
+    Self.State := EState.START_COOKING;
+
+    Self.DoAntiban;
+
+    Result := True;
+  except
+    Self.ExceptionCatch('TDraynorCooker.HandleBanking',GetExceptionMessage);
+    Result := False;
+  end;
+end;
+
+function TDraynorCooker.FindState: EState;
+begin
+  try
+    Self.Console('FindState()');
+
+    // if bank is open
+    if Bank.IsOpen then
+    begin
+      // if no raw items in inventory
+      if not Inventory.Items.Contains(Self.SelectedRawItem) then
+      begin
+        Self.Console('Bank.IsOpen - no raw items in the inventory');
+        Result := EState.START_BANKING;
+        Exit;
+      end
+      else
+      // if we have raw items in inventory
+      begin
+        Self.Console('Bank.IsOpen - raw items in the inventory');
+        Result := EState.START_COOKING;
+        Exit;
+      end;
+    end;
+
+    // open the inventory tab if it isnt open
+    if not Inventory.IsOpen then
+      WaitUntil(Inventory.Open,50,3000);
+
+    // if we have raw items
+    if Inventory.Items.Contains(Self.SelectedRawItem) then
+    begin
+      Self.Console('Inventory.Items.Contains - raw items in the inventory');
+      Result := EState.START_COOKING;
+      Exit;
+    end
+    // if we dont have raw items
+    else
+    begin
+      Self.Console('Inventory.Items.Contains - no raw items in the inventory');
+      Result := EState.START_BANKING;
+      Exit;
+    end;
+
+    // if state cannot be determined
+    Self.Console('Could not determine the state');
+    Result := EState.UNKNOWN;
+  except
+    Self.ExceptionCatch('TDraynorCooker.FindState',GetExceptionMessage);
+    Result := EState.UNKNOWN;
+  end;
+end;
+
+procedure TDraynorCooker.Report;
+begin
+  try
+    XPbar.TotalEarnedXP(True);
+    XPBar.EarnedXP();
+
+    APIClient.UpdatePayload(0, 0, 0);
+
+    if APIClient.Timer.IsFinished() then
+      APIClient.SubmitStats(APIClient.GetUUID());
+
+    WriteLn('|=============================|');
+    WriteLn('|- Gimpy666''s Draynor Cooker -|');
+    WriteLn('|=============================|');
+    WriteLn(padR('| Cooking: ' + Self.SelectedRawItem, 30, ' ') + '|');
+    WriteLn(padR('| State: ' + ToString(Self.State), 30, ' ') + '|');
+    WriteLn(padR('| Runtime: ' + SRL.MsToTime(GetTimeRunning, Time_Short), 30, ' ') + '|');
+    WriteLn(padR('| Items Cooked: ' + ToString(Round(XPbar.TotalEarnedXP(True))/Self.CookingXP), 30, ' ') + '|');
+    WriteLn(padR('| XP Gained: ' + ToString(Round(XPbar.TotalEarnedXP(True))), 30, ' ') + '|');
+    WriteLn('|=============================|');
+  except
+    Self.ExceptionCatch('TDraynorCooker.Report',GetExceptionMessage);
+  end;
+end;
+
+procedure TDraynorCooker.Console(msg: String);
+begin
+  if Self.DebuggingEnabled then
+    WriteLn(SRL.TimeStamp+':[Debug]: '+msg);
+end;
+
+procedure TDraynorCooker.ExceptionCatch(method: String; exception: ShortString);
+begin
+  WriteLn(SRL.TimeStamp+':[Exception]: '+'An exception occurred in: ' + method);
+  WriteLn(SRL.TimeStamp+':[Exception]: '+'Exception message: ' + exception);
+end;
+
+procedure TDraynorCooker.Init(maxActions: UInt32; maxTime: UInt64); override;
+begin
+  ClearDebug();
+  Self.Name := 'Gimpy666''s Draynor Cooker';
+  inherited;
+  Self.Console('Init()');
+
+  // set the items we want to cook using what we provided in the script gui
+  case Self.SelectedRawItem of
+    'Raw anchovies': Self.CookingXP := 30;
+    'Raw bear meat': Self.CookingXP := 30;
+    'Raw beef': Self.CookingXP := 30;
+    'Raw chicken': Self.CookingXP := 30;
+    'Raw herring': Self.CookingXP := 50;
+    'Raw lobster': Self.CookingXP := 120;
+    'Raw pike': Self.CookingXP := 80;
+    'Raw rat meat': Self.CookingXP := 30;
+    'Raw salmon': Self.CookingXP := 90;
+    'Raw sardine': Self.CookingXP := 40;
+    'Raw shrimps': Self.CookingXP := 30;
+    'Raw swordfish': Self.CookingXP := 140;
+    'Raw trout': Self.CookingXP := 70;
+    'Raw tuna': Self.CookingXP := 100;
+  end;
+
+  // setup the TRSBankItem
+  Self.RawItemToWithdraw := Self.RawItemToWithdraw.Setup(Self.SelectedRawItem,Bank.QUANTITY_ALL,False);
+
+  // log the player in if not logged in already
+  if not RSClient.IsLoggedIn then
+    Login.LoginPlayer;
+
+  // initialize map
+  Map.SetupChunk(DRAYNOR_VILLAGE);
+
+  // setup our objects in the loaded area
+  Objects.Setup(Map.Objects, @Map.Walker);
+
+  // set zoom level
+  RSMouseZoom.SetZoomLevel(Random(10, 15));
+
+  // enable run
+  if not Minimap.IsRunEnabled then
+    Minimap.EnableRun;
+
+  // setup the draynor camp fire TRSObjectV2
+  Self.Fire.SetupCoordinates([FIRE_COORD]);
+  Self.Fire.Name := 'Fire';
+  Self.Fire.UpText := ['Fire'];
+  Self.Fire.Size := [1,1,7];
+  Self.Fire.Rotations := [0];
+  Self.Fire.Finder.ColorClusters += [CTS2(5160936, 9, 2.39, 0.69), CTS2(16460, 11, 0.39, 0.69), 20];
+  Self.Fire.Finder.ColorClusters += [CTS2(16460, 11, 0.39, 0.69), CTS2(5160936, 9, 2.39, 0.69), 20];
+  Self.Fire.Finder.ClusterDistance := 6;
+  Self.Fire.Finder.Grow := 2;
+  Self.Fire.Filter := [True, True, True, True];
+end;
+
+procedure TDraynorCooker.Run(maxActions: UInt32; maxTime: UInt64);
+begin
+  Self.Console('Run()');
+  Self.Init(maxActions, maxTime);
+  repeat
+    Self.Console('Run() Loop');
+    Self.State := Self.FindState;
+    Self.Report;
+    Self.Console('Current state: '+ToString(Self.State));
+    case Self.State of
+      EState.START_BANKING: Self.HandleBanking;
+      EState.START_COOKING: Self.StartCooking;
+      EState.TERMINATE_SCRIPT: TerminateScript;
+    end;
+  until
+    Self.State = EState.TERMINATE_SCRIPT
+end;
+
+{$IFNDEF SCRIPT_CHAIN}
+{$IFDEF SCRIPT_GUI}
+
+type
+  TDraynorCookerConfig = record(TScriptForm)
+    Info: TLabel;
+    RawFoodSelector: TLabeledCombobox;
+    DebugMode: TLabeledCheckBox;
+  end;
+
+procedure TDraynorCookerConfig.StartScript(sender: TObject); override;
+begin
+  inherited;
+
+  TScript.SelectedRawItem := Self.RawFoodSelector.GetText;
+  TScript.DebuggingEnabled := Self.DebugMode.IsChecked;
+end;
+
+procedure TDraynorCookerConfig.Run(); override;
+var
+  tab: TTabSheet;
+begin
+  Self.Setup('Gimpy666s Draynor Cooker');
+  Self.Start.setOnClick(@Self.StartScript);
+
+  Self.AddTab('Script Settings');
+  tab := Self.Tabs[High(Self.Tabs)];
+
+  Self.CreateAccountManager(tab);
+
+  with Self.Info do
+  begin
+    Create(tab);
+    SetCaption('Start this script inside the bank in Draynor Village' + LINEENDING +
+               'Make sure your raw food item is at the top of your bank');
+    SetLeft(TControl.AdjustToDPI(30));
+    SetTop(TControl.AdjustToDPI(170));
+    SetWidth(TControl.AdjustToDPI(100));
+  end;
+
+  with Self.RawFoodSelector do
+  begin
+    Create(tab);
+    SetCaption('Raw food to cook:');
+    SetLeft(TControl.AdjustToDPI(30));
+    SetTop(Self.Info.GetBottom() + TControl.AdjustToDPI(30));
+    SetWidth(TControl.AdjustToDPI(200));
+    SetStyle(csDropDownList);
+    AddItemArray([
+      'Raw anchovies',
+      'Raw bear meat',
+      'Raw beef',
+      'Raw chicken',
+      'Raw herring',
+      'Raw lobster',
+      'Raw pike',
+      'Raw rat meat',
+      'Raw salmon',
+      'Raw sardine',
+      'Raw shrimps',
+      'Raw swordfish',
+      'Raw trout',
+      'Raw tuna'
+    ]);
+    SetItemIndex(0);
+  end;
+
+  with Self.DebugMode do
+  begin
+    Create(tab);
+    SetCaption('Debug Logging');
+    SetLeft(TControl.AdjustToDPI(30));
+    SetTop(Self.RawFoodSelector.GetBottom() + TControl.AdjustToDPI(20));
+  end;
+
+  Self.CreateAntibanManager();
+  Self.CreateWaspLibSettings();
+  Self.CreateAPISettings();
+
+  inherited;
+end;
+
+var
+  DraynorCookerConfig: TDraynorCookerConfig;
+{$ENDIF}
+{$ENDIF}
+
+{$IFNDEF SCRIPT_CHAIN}
+begin
+  {$IFDEF SCRIPT_GUI}
+  TScript.Console('Main()');
+  DraynorCookerConfig.Run();
+  {$ENDIF}
+  TScript.Run(WLSettings.MaxActions, WLSettings.MaxTime);
+end.
+{$ENDIF}
