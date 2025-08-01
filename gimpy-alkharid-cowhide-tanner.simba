@@ -11,7 +11,7 @@
 Gimpy666's Al Kharid Tanner Revision 1
 1-Aug-2025
 
-This script will tan cow hides in Al Kharid by withdrawing cow hides from the
+This script will tan cowhides in Al Kharid by withdrawing cowhides from the
 Al Kharid bank and pay to tan them at the tanner north of the bank.
 
 Tested with:
@@ -23,7 +23,7 @@ o WaspLib 20.3.7
 Instructions:
 o Start the script in the bank in Al Kharid
 o Have enough gp in your inventory to pay the tanner for your session
-o Have your cow hides located at the top of your bank
+o Have your cowhides located at the top of your bank
 ------------------------------------------------------------------------}
 
 type
@@ -145,7 +145,7 @@ begin
     Minimap.WaitPlayerMoving;
     Wait(500,1000);
 
-    // tan all the hides ##### need to test this
+    // tan all the hides
     TanScreen.ClickHide(Self.HideToTan);
 
     // wait until the hide interface is closed
