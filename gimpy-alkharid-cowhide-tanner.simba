@@ -1,0 +1,539 @@
+{$DEFINE SCRIPT_ID := ''}
+{$DEFINE SCRIPT_REVISION := '1'}
+{$IFNDEF SCRIPT_CHAIN}
+  {$DEFINE SCRIPT_GUI}
+  {$I SRL-T/osr.simba}
+  {$I WaspLib/osr.simba}
+  {$I WaspLib/optional/interfaces/mainscreen/tanscreen.simba}
+{$ENDIF}
+
+{------------------------------------------------------------------------
+Gimpy666's Al Kharid Tanner Revision 1
+1-Aug-2025
+
+This script will tan cow hides in Al Kharid by withdrawing cow hides from the
+Al Kharid bank and pay to tan them at the tanner north of the bank.
+
+Tested with:
+o RuneLite x64
+o Simba r1400 x64
+o SRL-T 7.20.16
+o WaspLib 20.3.7
+
+Instructions:
+o Start the script in the bank in Al Kharid
+o Have enough gp in your inventory to pay the tanner for your session
+o Have your cow hides located at the top of your bank
+------------------------------------------------------------------------}
+
+type
+  EState = (
+    START_BANKING,
+    START_TANNING,
+    UNKNOWN,
+    TERMINATE_SCRIPT);
+
+  TMonster = record
+    Obj: TRSNPCV2;            // trsnpcv2 object for our monster
+    ATPA: T2DPointArray;      // array of tpoints for colours of the monster(s) #####
+    CEA: TCuboidExArray;      // array of cuboids for the monster(s) #####
+  end;
+
+  TAlKharidTanner = record (TBaseBankScript)
+    State: EState;
+    HidesTanned: Integer;
+    ItemToWithdraw: TRSBankItem;
+    DebuggingEnabled: Boolean;
+
+    //AlKharidGate: TRSObjectV2;            // trsobject for gate to al kharid
+    //CowGate: TRSObjectV2;                 // trsobject for gate by cow pen
+    //TannerDoor: TRSObjectV2;              // trsobject for door at the tanner
+    Ellis: TMonster;                      // TRSNPCV2 for ellis
+    HideToTan: ERSHide;                   // ERSHide type of hide we are tanning
+    HideToTanText: String;                // text of the hide we are tanning
+    TanPrice: Integer;                    // cost to tan the hide
+    HandleDoors: Boolean;                 // should we enable door handling or not
+  end;
+
+const
+  // initialize constants
+  LUMBRIDGE_AL_KHARID: TRSMapChunk := [[49,52,52,48],[0]];
+var
+  // initialize records
+  TScript: TAlKharidTanner;
+
+procedure TAntiban.Setup(); override;
+begin
+  Self.MinZoom := 0;
+  Self.MaxZoom := 1;
+
+  inherited;
+end;
+
+function TAlKharidTanner.StartTanning: Boolean;
+var
+  tgtCEA: TCuboidExArray;
+  tgtATPA: T2DPointArray;
+  attempts: Integer := 0;
+
+begin
+  try
+    Self.Console('StartTanning()');
+
+    // close open interfaces
+    InterfaceArea.Close(True);
+    Wait(1000,1200);
+
+    // do some antiban
+    Self.DoAntiban;
+
+    // enable run
+    if not Minimap.IsRunEnabled then
+      Minimap.EnableRun;
+
+    // walk to ellis
+    Map.Walker.WebWalk([9008,37662]);
+    Wait(350,3100);
+
+    // clear the stored cuboids and atpa's
+    Self.Ellis.CEA := [];
+    Self.Ellis.ATPA := [];
+
+    // if ellis found, assign cuboids and atapa's
+    repeat
+    begin
+      // if ellis found, assign cuboids and atapa's and exit the loop
+      if Self.Ellis.Obj.FindEx(tgtCEA,tgtATPA) then
+      begin
+        Self.Ellis.CEA := tgtCEA;
+        Self.Ellis.ATPA := tgtATPA;
+        Break;
+      end;
+      // if he wasnt found and we did 20 attempts, rotate camera and wait a little
+      if (attempts mod 20 = 0) then
+      begin
+        Antiban.RandomRotate;
+        Wait(500,1500);
+      end;
+      attempts += 1;
+    end;
+    until
+      attempts = 200;
+
+    // if we were unable to find ellis
+    if attempts = 200 then
+    begin
+      Self.Console('Unable to find Ellis');
+      Self.State := EState.TERMINATE_SCRIPT;
+      Exit;
+    end;
+
+    // move mouse over ellis and right click
+    Mouse.Move(Self.Ellis.ATPA.Biggest.Mean.Offset(Random(-2,2),Random(-2,2)));
+    Wait(20,120);
+    Mouse.Click(Self.Ellis.ATPA.Biggest.Mean.Offset(Random(-2,2),Random(-2,2)),MOUSE_RIGHT);
+
+    // select the trade option
+    if ChooseOption.HasOption('Trade') then
+      ChooseOption.Select('Trade')
+    // if the trade option isnt there, exit
+    else
+      Exit;
+
+    // wait until player is done moving
+    Wait(1000,1500);
+    Minimap.WaitPlayerMoving;
+    Wait(500,1000);
+
+    // tan all the hides ##### need to test this
+    TanScreen.ClickHide(Self.HideToTan);
+
+    // wait until the hide interface is closed
+    WaitUntil(not RSInterface.IsOpen(ERSInterfaceType.CLASSIC), 300, 3000);
+
+    // if our inventory still contains raw items
+    if Inventory.Items.Contains('Cowhide') then
+      Self.State := EState.START_TANNING
+    // if our inventory doesnt contains raw items
+    else
+      Self.State := EState.START_BANKING;
+
+    // do some antiban
+    Self.DoAntiban;
+
+    Wait(400,6000);
+    Result := True;
+  except
+    Self.ExceptionCatch('TAlKharidTanner.StartTanning',GetExceptionMessage);
+    Result := False;
+  end;
+end;
+
+function TAlKharidTanner.HandleBanking: Boolean;
+begin
+  try
+    Self.Console('HandleBanking()');
+
+    // enable run
+    if not Minimap.IsRunEnabled then
+      Minimap.EnableRun;
+
+    // if the bank interface isnt open, walk to the nearest bank and open it
+    if not Bank.IsOpen then
+      Banks.WalkOpen;
+
+    // if we failed to open the bank, exit
+    if not Bank.IsOpen then
+      Exit;
+
+    // update the count of hides we have tanned
+    if Inventory.ContainsAny(['Leather','Hard leather']) then
+      Self.HidesTanned += Inventory.CountItem('Leather') + Inventory.CountItem('Hard leather');
+
+    // deposit all items in inventory besides our coins
+    Bank.DepositRandomItems(['Coins']);
+    Wait(500,1500);
+
+    // if we dont have any raw items left
+    if Bank.CountItem('Cowhide') = 0 then
+    begin
+      Self.Console('Could not find cowhide in the bank');
+      Self.State := EState.TERMINATE_SCRIPT;
+      Exit;
+    end;
+
+    // withdraw the item
+    Bank.WithdrawItem(Self.ItemToWithdraw,True);
+    WaitUntil(Inventory.ContainsItem('Cowhide'),100,2000);
+    Wait(400,1100);
+
+    Self.State := EState.START_TANNING;
+    Self.DoAntiban;
+    Result := True;
+  except
+    Self.ExceptionCatch('TAlKharidTanner.HandleBanking',GetExceptionMessage);
+    Result := False;
+  end;
+end;
+
+function TAlKharidTanner.FindState: EState;
+begin
+  try
+    Self.Console('FindState()');
+
+    // if bank is open
+    if Bank.IsOpen then
+    begin
+      // if no cowhides in inventory
+      if not Inventory.Items.Contains('Cowhide') then
+      begin
+        Self.Console('Bank.IsOpen - no cowhides in the inventory');
+        Result := EState.START_BANKING;
+        Exit;
+      end
+      else
+      // if we have cowhides in inventory
+      begin
+        Self.Console('Bank.IsOpen - cowhides in the inventory');
+        Result := EState.START_TANNING;
+        Exit;
+      end;
+    end;
+
+    // open the inventory tab if it isnt open
+    if not Inventory.IsOpen then
+      WaitUntil(Inventory.Open,50,3000);
+
+    // if we have cowhides
+    if Inventory.Items.Contains('Cowhide') then
+    begin
+      Self.Console('Inventory.Items.Contains - cowhides in the inventory');
+      Result := EState.START_TANNING;
+      Exit;
+    end
+    // if we dont have cowhides
+    else
+    begin
+      Self.Console('Inventory.Items.Contains - no cowhides in the inventory');
+      Result := EState.START_BANKING;
+      Exit;
+    end;
+
+    // if state cannot be determined
+    Self.Console('Could not determine the state');
+    Result := EState.UNKNOWN;
+  except
+    Self.ExceptionCatch('TAlKharidTanner.FindState',GetExceptionMessage);
+    Result := EState.UNKNOWN;
+  end;
+end;
+
+procedure TAlKharidTanner.Report;
+begin
+  try
+    APIClient.UpdatePayload(0, 0, 0);
+
+    if APIClient.Timer.IsFinished() then
+      APIClient.SubmitStats(APIClient.GetUUID());
+
+    WriteLn('|=============================|');
+    WriteLn('|-Gimpy666''s Al Kharid Tanner-|');
+    WriteLn('|=============================|');
+    WriteLn(padR('| Tanning: ' + Self.HideToTanText, 30, ' ') + '|');
+    WriteLn(padR('| State: ' + ToString(Self.State), 30, ' ') + '|');
+    WriteLn(padR('| Runtime: ' + SRL.MsToTime(GetTimeRunning, Time_Short), 30, ' ') + '|');
+    WriteLn(padR('| Hides Tanned: ' + ToString(Self.HidesTanned), 30, ' ') + '|');
+    WriteLn('|=============================|');
+  except
+    Self.ExceptionCatch('TAlKharidTanner.Report',GetExceptionMessage);
+  end;
+end;
+
+procedure TAlKharidTanner.Console(msg: String);
+begin
+  if Self.DebuggingEnabled then
+    WriteLn(SRL.TimeStamp+':[Debug]: '+msg);
+end;
+
+procedure TAlKharidTanner.ExceptionCatch(method: String; exception: ShortString);
+begin
+  WriteLn(SRL.TimeStamp+':[Exception]: '+'An exception occurred in: ' + method);
+  WriteLn(SRL.TimeStamp+':[Exception]: '+'Exception message: ' + exception);
+end;
+
+procedure TAlKharidTanner.Init(maxActions: UInt32; maxTime: UInt64); override;
+begin
+  ClearDebug();
+  Self.Name := 'Gimpy666''s Al Kharid Tanner';
+  Self.HidesTanned := 0;
+
+  inherited;
+
+  Self.Console('Init()');
+
+  // setup the TRSBankItem
+  Self.ItemToWithdraw := Self.ItemToWithdraw.Setup('Cowhide',Bank.QUANTITY_ALL,False);
+
+  // log the player in if not logged in already
+  if not RSClient.IsLoggedIn then
+    Login.LoginPlayer;
+
+  // initialize map
+  Map.SetupChunk(LUMBRIDGE_AL_KHARID);
+
+  // setup our objects in the loaded area
+  Objects.Setup(Map.Objects, @Map.Walker);
+
+  // enable door handler for walker
+  if Self.HandleDoors then
+  begin
+    Map.Walker._DoorHandler.Enabled := True;
+    Map.Loader.Graph.UseCollisionData := True;
+  end;
+
+  // setting up our objects using TRSObjectV2
+  //Self.AlKharidGate := Objects.GetAllByCoordinate([8972,37518], 4)[0];
+  //Self.CowGate := Objects.GetAllByCoordinate([8912,37366], 4)[0];
+
+  // set zoom level
+  RSMouseZoom.SetZoomLevel(Random(10, 15));
+
+  // enable run
+  if not Minimap.IsRunEnabled then
+    Minimap.EnableRun;
+
+  {// setup the cow pen gate TRSObjectV2
+  Self.CowGate.SetupCoordinates([[8914,37362],[8914,37366]]);
+  Self.CowGate.Name := 'Cow Gate';
+  Self.CowGate.UpText := ['Gate'];
+  Self.CowGate.Size := [2,1,7];
+  Self.CowGate.Rotations := [0];
+  Self.CowGate.Finder.ColorClusters += [CTS2(1466756, 9, 2.39, 0.69), CTS2(1069425, 11, 0.39, 0.69), 20];
+  Self.CowGate.Finder.ColorClusters += [CTS2(1069425, 11, 0.39, 0.69), CTS2(1466756, 9, 2.39, 0.69), 20];
+  Self.CowGate.Finder.ColorClusters += [CTS2(14156, 9, 2.39, 0.69), CTS2(1464957, 11, 0.39, 0.69), 20];
+  Self.CowGate.Finder.ColorClusters += [CTS2(1464957, 11, 0.39, 0.69), CTS2(14156, 9, 2.39, 0.69), 20];
+  Self.CowGate.Finder.ClusterDistance := 3;
+  //Self.CowGate.Finder.Grow := 2;
+  Self.CowGate.Filter := [True, True, True, True];}
+  {repeat
+  Debug(MainScreen.FindObject(Self.CowGate.Finder));
+  Debug(MainScreen.FindObject(Self.CowGate.Finder).ToTBA);
+  until false;}
+
+  // setup the al kharid gate TRSObjectV2
+  {Self.AlKharidGate.SetupCoordinates([[8974,37518],[8974,37522]]);
+  Self.AlKharidGate.Name := 'Al Kharid Gate';
+  Self.AlKharidGate.UpText := ['Gate'];
+  Self.AlKharidGate.Size := [2,1,7];
+  Self.AlKharidGate.Rotations := [2];
+  Self.AlKharidGate.Finder.ColorClusters += [CTS2(7237750, 6, 2.29, 0.59), CTS2(9737373, 6, 0.29, 0.59), 20];
+  Self.AlKharidGate.Finder.ColorClusters += [CTS2(9737373, 6, 0.29, 0.59), CTS2(7237750, 6, 2.29, 0.59), 20];
+  Self.AlKharidGate.Finder.ColorClusters += [CTS2(10000803, 6, 2.29, 0.59), CTS2(10461097, 6, 1.29, 0.59), 20];
+  Self.AlKharidGate.Finder.ColorClusters += [CTS2(10461097, 6, 1.29, 0.59), CTS2(10000803, 6, 2.29, 0.59), 20];
+  Self.AlKharidGate.Finder.ClusterDistance := 3;
+  Self.AlKharidGate.Filter := [True, True, True, True];}
+  {repeat
+  Debug(MainScreen.FindObject(Self.AlKharidGate.Finder));
+  Debug(MainScreen.FindObject(Self.AlKharidGate.Finder).ToTBA);
+  until false;}
+
+  // setup the tanner door TRSObjectV2
+  {Self.TannerDoor.SetupCoordinates([[9014,37666]]);
+  Self.TannerDoor.Name := 'Tanner Door';
+  Self.TannerDoor.UpText := ['Door'];
+  Self.TannerDoor.Size := [1,1,7];
+  Self.TannerDoor.Rotations := [0];
+  Self.TannerDoor.Finder.ColorClusters += [CTS2(2781323, 9, 2.39, 0.69), CTS2(2119533, 11, 0.39, 0.69), 20];
+  Self.TannerDoor.Finder.ColorClusters += [CTS2(2119533, 11, 0.39, 0.69), CTS2(2781323, 9, 2.39, 0.69), 20];
+  Self.TannerDoor.Finder.ColorClusters += [CTS2(2582400, 11, 0.39, 0.69), CTS2(3309213, 9, 2.39, 0.69), 20];
+  Self.TannerDoor.Finder.ColorClusters += [CTS2(3309213, 11, 0.39, 0.69), CTS2(2582400, 9, 2.39, 0.69), 20];
+  Self.TannerDoor.Finder.ClusterDistance := 6;
+  Self.TannerDoor.Finder.Grow := 2;
+  Self.TannerDoor.Filter := [True, True, True, True];}
+  //repeat Debug(MainScreen.FindObject(Self.TannerDoor.Finder)) until false;
+
+  // located in [8984,37650],[9016,37674]
+  Self.Ellis.Obj.Walker := @Map.Walker;
+  Self.Ellis.Obj.SetupEx(20, [1,1,7], [[9000,37662]]);
+  Self.Ellis.Obj.TrackTarget := True;
+  Self.Ellis.Obj.SetupUpText('Ellis');
+  Self.Ellis.Obj.Finder.ColorClusters += [CTS2(2307907, 8, 2.24, 0.64), CTS2(5338560, 6, 0.18, 0.53), 20];
+  Self.Ellis.Obj.Finder.ColorClusters += [CTS2(5338560, 8, 2.24, 0.64), CTS2(2307907, 6, 0.18, 0.53), 20];
+  Self.Ellis.Obj.Finder.ColorClusters += [CTS2(4222101, 8, 2.24, 0.64), CTS2(5009077, 6, 0.18, 0.53), 20];
+  Self.Ellis.Obj.Finder.ColorClusters += [CTS2(5009077, 8, 2.24, 0.64), CTS2(4222101, 6, 0.18, 0.53), 20];
+  Self.Ellis.Obj.Finder.ClusterDistance := 5;
+  Self.Ellis.Obj.Finder.Grow := 2;
+  Self.Ellis.Obj.Filter := [True, True, True, True];
+  {repeat
+  Debug(MainScreen.FindObject(Self.Ellis.Obj.Finder));
+  Debug(MainScreen.FindObject(Self.Ellis.Obj.Finder).ToTBA);
+  Debug(Self.Ellis.Obj);
+  until false;}
+
+end;
+
+procedure TAlKharidTanner.Run(maxActions: UInt32; maxTime: UInt64);
+begin
+  Self.Console('Run()');
+  Self.Init(maxActions, maxTime);
+  repeat
+    Self.Console('Run() Loop');
+    Self.State := Self.FindState;
+    Self.Report;
+    Self.Console('Current state: '+ToString(Self.State));
+    case Self.State of
+      EState.START_BANKING: Self.HandleBanking;
+      EState.START_TANNING: Self.StartTanning;
+      EState.TERMINATE_SCRIPT: TerminateScript;
+    end;
+  until
+    Self.State = EState.TERMINATE_SCRIPT
+end;
+
+{$IFNDEF SCRIPT_CHAIN}
+{$IFDEF SCRIPT_GUI}
+
+type
+  TAlKharidTannerConfig = record(TScriptForm)
+    Info: TLabel;
+    TanningSelector: TLabeledCombobox;
+    DebugMode: TLabeledCheckBox;
+    Doors: TLabeledCheckBox;
+  end;
+
+procedure TAlKharidTannerConfig.StartScript(sender: TObject); override;
+begin
+  inherited;
+
+  case Self.TanningSelector.GetText of
+    'Soft leather':
+      begin
+        TScript.HideToTan := ERSHide.SOFT;
+        TScript.HideToTanText := 'Soft leather';
+        TScript.TanPrice := 1;
+      end;
+
+    'Hard leather':
+      begin
+        TScript.HideToTan := ERSHide.HARD;
+        TScript.HideToTanText := 'Hard leather';
+        TScript.TanPrice := 3;
+      end;
+  end;
+
+  TScript.HandleDoors := Self.Doors.IsChecked;
+  TScript.DebuggingEnabled := Self.DebugMode.IsChecked;
+end;
+
+procedure TAlKharidTannerConfig.Run(); override;
+var
+  tab: TTabSheet;
+begin
+  Self.Setup('Gimpy666s Al Kharid Tanner');
+  Self.Start.setOnClick(@Self.StartScript);
+  Self.AddTab('Script Settings');
+  tab := Self.Tabs[High(Self.Tabs)];
+  Self.CreateAccountManager(tab);
+
+  with Self.Info do
+  begin
+    Create(tab);
+    SetCaption('Start this script inside the bank in Al Kharid' + LINEENDING +
+               'Make sure you have gp in your inventory');
+    SetLeft(TControl.AdjustToDPI(30));
+    SetTop(TControl.AdjustToDPI(170));
+    SetWidth(TControl.AdjustToDPI(100));
+  end;
+
+  with Self.TanningSelector do
+  begin
+    Create(tab);
+    SetCaption('Hides to tan:');
+    SetLeft(TControl.AdjustToDPI(30));
+    SetTop(Self.Info.GetBottom() + TControl.AdjustToDPI(30));
+    SetWidth(TControl.AdjustToDPI(200));
+    SetStyle(csDropDownList);
+    AddItemArray([
+      'Soft leather',
+      'Hard leather'
+    ]);
+    SetItemIndex(0);
+  end;
+
+  with Self.Doors do
+  begin
+    Create(tab);
+    SetCaption('Enable Door Handling (buggy)');
+    SetLeft(TControl.AdjustToDPI(30));
+    SetTop(Self.TanningSelector.GetBottom() + TControl.AdjustToDPI(20));
+  end;
+
+  with Self.DebugMode do
+  begin
+    Create(tab);
+    SetCaption('Debug Logging');
+    SetLeft(TControl.AdjustToDPI(30));
+    SetTop(Self.Doors.GetBottom() + TControl.AdjustToDPI(20));
+  end;
+
+  Self.CreateAntibanManager();
+  Self.CreateWaspLibSettings();
+  Self.CreateAPISettings();
+
+  inherited;
+end;
+
+var
+  DraynorCookerConfig: TAlKharidTannerConfig;
+{$ENDIF}
+{$ENDIF}
+
+{$IFNDEF SCRIPT_CHAIN}
+begin
+  {$IFDEF SCRIPT_GUI}
+  TScript.Console('Main()');
+  DraynorCookerConfig.Run();
+  {$ENDIF}
+  TScript.Run(WLSettings.MaxActions, WLSettings.MaxTime);
+end.
+{$ENDIF}
